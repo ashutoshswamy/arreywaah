@@ -1,26 +1,661 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+    --ink: #17123f;
+    --ink-deep: #0f0b2e;
+    --ink-soft: #221a57;
+    --marigold: #ffb81c;
+    --gulal: #e8336d;
+    --teal: #27c2b0;
+    --chalk: #fff4d6;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+    --color-ink: var(--ink);
+    --color-ink-deep: var(--ink-deep);
+    --color-ink-soft: var(--ink-soft);
+    --color-marigold: var(--marigold);
+    --color-gulal: var(--gulal);
+    --color-teal: var(--teal);
+    --color-chalk: var(--chalk);
+    --font-display: var(--font-yatra), "Noto Sans Devanagari", sans-serif;
+    --font-sans: var(--font-figtree), system-ui, sans-serif;
+    --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 5rem;
+    background: var(--ink);
+}
+body {
+    background: var(--ink);
+    color: var(--chalk);
+    font-family: var(--font-figtree), system-ui, sans-serif;
+}
+:focus-visible {
+    outline: 3px solid var(--gulal);
+    outline-offset: 3px;
+}
+
+/* Arrival layers: world 0, input 1, HUD 2, arrival wash 3.
+   Panels and buttons share an 8px radius; the scene has no full-screen scrim. */
+.aw-stage {
+    --aw-surface: #e6e9e7;
+    --aw-text: var(--ink);
+    --aw-panel: #fff4d6;
+    --aw-muted: #504a66;
+    --aw-border: #b0a78d;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: var(--aw-surface);
+    color: var(--aw-text);
+    user-select: none;
+    -webkit-user-select: none;
+    transition: opacity 0.35s ease;
+}
+.aw-stage[data-phase="reveal"] {
+    opacity: 0;
+    pointer-events: none;
+}
+.aw-canvas {
+    position: absolute;
+    inset: 0;
+}
+.aw-canvas canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+.aw-arrival-wash {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    opacity: 0;
+    background: var(--marigold);
+    transition: opacity 0.45s ease;
+}
+.aw-stage[data-phase="enter"] .aw-arrival-wash {
+    opacity: 1;
+}
+.aw-drag {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    touch-action: none;
+    cursor: grab;
+}
+.aw-drag:active {
+    cursor: grabbing;
+}
+.aw-ui {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 16px;
+    padding: max(20px, env(safe-area-inset-top))
+        max(24px, env(safe-area-inset-right))
+        max(20px, env(safe-area-inset-bottom))
+        max(24px, env(safe-area-inset-left));
+    pointer-events: none;
+}
+.aw-panel {
+    background: var(--aw-panel);
+    color: var(--aw-text);
+    border: 1px solid var(--aw-border);
+    border-radius: 8px;
+}
+.aw-ui-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+.aw-brand {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    flex-shrink: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--aw-border);
+    border-radius: 8px;
+    background: var(--aw-panel);
+    color: var(--aw-text);
+    font:
+        24px/1 var(--font-yatra),
+        sans-serif;
+    letter-spacing: -0.05em;
+    text-decoration: none;
+    pointer-events: auto;
+}
+.aw-top-tools {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+.aw-top-tools details {
+    position: relative;
+    pointer-events: auto;
+}
+.aw-top-tools summary {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-height: 44px;
+    padding: 10px 12px;
+    list-style: none;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+.aw-top-tools summary::-webkit-details-marker {
+    display: none;
+}
+.aw-top-tools summary::after {
+    content: "+";
+    color: var(--aw-muted);
+    font:
+        16px/1 var(--font-geist-mono),
+        monospace;
+}
+.aw-top-tools details[open] summary::after {
+    content: "−";
+}
+.aw-discoveries strong {
+    font:
+        600 12px/1 var(--font-geist-mono),
+        monospace;
+    color: var(--aw-text);
+}
+.aw-discovery-list,
+.aw-help-content {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 1;
+    width: 280px;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100dvh - 110px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 16px;
+    border: 1px solid var(--aw-border);
+    border-radius: 8px;
+    background: var(--aw-panel);
+    color: var(--aw-text);
+    font-size: 13px;
+    line-height: 1.5;
+    user-select: text;
+    -webkit-user-select: text;
+}
+.aw-discovery-list p,
+.aw-help-content p {
+    margin: 0 0 12px;
+    color: var(--aw-muted);
+}
+.aw-discovery-list ul {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+.aw-discovery-list li {
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    gap: 8px;
+    align-items: center;
+}
+.aw-discovery-list li[data-found="true"] {
+    font-weight: 700;
+}
+.aw-discovery-state {
+    color: var(--aw-muted);
+    font-size: 11px;
+    font-weight: 400;
+}
+.aw-ui-bottom {
+    display: grid;
+    justify-items: end;
+    align-self: flex-end;
+    gap: 10px;
+    max-width: 100%;
+}
+.aw-play-note {
+    width: fit-content;
+    max-width: 360px;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.45;
+}
+.aw-play-note p {
+    margin: 0;
+}
+.aw-play-controls {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    max-width: 100%;
+}
+.aw-actions {
+    display: grid;
+    gap: 8px;
+    width: 320px;
+    max-width: 100%;
+    padding: 8px;
+    pointer-events: auto;
+}
+.aw-btn {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 10px 14px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: var(--marigold);
+    color: var(--ink);
+    font:
+        700 13px/1.2 var(--font-figtree),
+        system-ui,
+        sans-serif;
+    white-space: nowrap;
+    cursor: pointer;
+    touch-action: manipulation;
+    pointer-events: auto;
+    transition:
+        transform 0.15s ease,
+        background-color 0.15s ease;
+}
+.aw-btn:hover:not(:disabled) {
+    background: #ffc845;
+}
+.aw-btn:active:not(:disabled),
+.aw-pad-button:active:not(:disabled) {
+    transform: scale(0.97);
+}
+.aw-btn:disabled,
+.aw-pad-button:disabled {
+    cursor: default;
+    background: var(--aw-panel);
+    color: var(--aw-muted);
+    border-color: var(--aw-border);
+}
+.aw-btn-secondary {
+    border-color: var(--aw-border);
+    background: var(--aw-panel);
+    color: var(--aw-text);
+}
+.aw-btn-secondary:hover:not(:disabled) {
+    background: var(--aw-text);
+    color: var(--aw-panel);
+}
+.aw-btn-secondary[aria-pressed="true"] {
+    background: var(--marigold);
+    color: var(--ink);
+    border-color: var(--marigold);
+}
+.aw-secondary-actions {
+    display: flex;
+    gap: 8px;
+}
+.aw-secondary-actions > .aw-btn {
+    flex: 1;
+    padding-inline: 10px;
+}
+.aw-interact {
+    justify-content: flex-start;
+    padding-inline: 12px;
+}
+.aw-interact span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.aw-interact kbd {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 24px;
+    min-height: 24px;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    font:
+        600 12px/1 var(--font-geist-mono),
+        monospace;
+}
+.aw-key-hint {
+    font-size: 11px;
+    font-weight: 400;
+}
+.aw-secondary-actions > .aw-run {
+    display: none;
+}
+.aw-dpad {
+    display: none;
+    grid-template-columns: repeat(3, 44px);
+    grid-template-rows: repeat(2, 44px);
+    gap: 4px;
+    padding: 8px;
+    pointer-events: auto;
+}
+.aw-pad-button {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--aw-border);
+    border-radius: 8px;
+    background: var(--aw-panel);
+    color: var(--aw-text);
+    font:
+        24px/1 var(--font-figtree),
+        system-ui,
+        sans-serif;
+    cursor: pointer;
+    touch-action: none;
+    transition: transform 0.15s ease;
+}
+.aw-pad-button:hover:not(:disabled) {
+    background: var(--marigold);
+    color: var(--ink);
+}
+.aw-pad-up {
+    grid-area: 1 / 2;
+}
+.aw-pad-left {
+    grid-area: 2 / 1;
+}
+.aw-pad-down {
+    grid-area: 2 / 2;
+}
+.aw-pad-right {
+    grid-area: 2 / 3;
+}
+.aw-help {
+    margin: 0;
+    padding: 6px 10px;
+    color: var(--aw-muted);
+    font-size: 11px;
+    line-height: 1.4;
+}
+.aw-help-touch {
+    display: none;
+}
+.aw-loading,
+.aw-error {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(320px, calc(100% - 32px));
+    padding: 22px;
+    text-align: center;
+}
+.aw-loading-mark {
+    display: block;
+    margin-bottom: 12px;
+    font:
+        26px/1 var(--font-yatra),
+        sans-serif;
+}
+.aw-loading p {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+}
+.aw-loading small {
+    color: var(--aw-muted);
+    font-size: 12px;
+}
+.aw-error {
+    pointer-events: auto;
+}
+.aw-error h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.3;
+}
+.aw-error p {
+    margin: 12px 0 18px;
+    color: var(--aw-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+.aw-no-script {
+    position: fixed;
+    inset: 0;
+    z-index: 101;
+    display: grid;
+    align-content: center;
+    justify-content: center;
+    gap: 20px;
+    background: var(--ink);
+    color: var(--chalk);
+    padding: 24px;
+}
+.aw-no-script a {
+    color: var(--marigold);
+    text-decoration: underline;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+    .aw-stage {
+        --aw-surface: #17123f;
+        --aw-text: #fff4d6;
+        --aw-panel: #221a57;
+        --aw-muted: #cfcae2;
+        --aw-border: #756b96;
+    }
+}
+@media (max-width: 1023px), (hover: none), (pointer: coarse) {
+    .aw-dpad {
+        display: grid;
+    }
+    .aw-secondary-actions > .aw-run {
+        display: inline-flex;
+    }
+    .aw-help-desktop,
+    .aw-key-hint {
+        display: none;
+    }
+    .aw-help-touch {
+        display: inline;
+    }
+    .aw-actions {
+        width: 290px;
+    }
+}
+@media (max-width: 767px) {
+    .aw-ui {
+        padding: max(12px, env(safe-area-inset-top))
+            max(12px, env(safe-area-inset-right))
+            max(12px, env(safe-area-inset-bottom))
+            max(12px, env(safe-area-inset-left));
+    }
+    .aw-ui-top {
+        gap: 8px;
+    }
+    .aw-brand {
+        padding-inline: 10px;
+        font-size: 22px;
+    }
+    .aw-top-tools {
+        gap: 6px;
+    }
+    .aw-top-tools summary {
+        gap: 6px;
+        padding-inline: 9px;
+    }
+    .aw-discoveries summary > span {
+        display: none;
+    }
+    .aw-discovery-list {
+        position: fixed;
+        top: calc(max(12px, env(safe-area-inset-top)) + 54px);
+        right: max(12px, env(safe-area-inset-right));
+    }
+    .aw-skip {
+        padding-inline: 10px;
+        font-size: 12px;
+    }
+    .aw-ui-bottom {
+        align-self: stretch;
+        justify-items: stretch;
+        gap: 8px;
+    }
+    .aw-play-note {
+        justify-self: end;
+        max-width: min(320px, 100%);
+        font-size: 12px;
+    }
+    .aw-play-controls {
+        justify-content: space-between;
+        gap: 8px;
+    }
+    .aw-dpad {
+        grid-template-columns: repeat(3, 40px);
+        grid-template-rows: repeat(2, 44px);
+        gap: 2px;
+        padding: 6px;
+        flex-shrink: 0;
+    }
+    .aw-pad-button {
+        width: 40px;
+    }
+    .aw-actions {
+        width: 270px;
+        min-width: 0;
+        padding: 6px;
+        gap: 6px;
+    }
+    .aw-secondary-actions {
+        gap: 4px;
+    }
+    .aw-secondary-actions > .aw-btn {
+        padding-inline: 6px;
+        font-size: 12px;
+    }
+    .aw-interact {
+        padding-inline: 8px;
+        font-size: 12px;
+    }
+    .aw-interact kbd {
+        display: none;
+    }
+    .aw-help {
+        justify-self: end;
+    }
+}
+@media (max-width: 359px) {
+    .aw-top-tools summary {
+        padding-inline: 6px;
+    }
+    .aw-brand {
+        font-size: 20px;
+        padding-inline: 8px;
+    }
+    .aw-dpad {
+        padding: 4px;
+        gap: 0;
+    }
+    .aw-ui {
+        padding-inline: 8px;
+    }
+    .aw-actions {
+        padding: 4px;
+    }
+    .aw-secondary-actions > .aw-btn {
+        padding-inline: 4px;
+        font-size: 11px;
+    }
+}
+@media (max-height: 560px) {
+    .aw-ui {
+        padding-top: max(10px, env(safe-area-inset-top));
+        padding-bottom: max(10px, env(safe-area-inset-bottom));
+    }
+    .aw-ui-bottom {
+        gap: 6px;
+    }
+    .aw-play-note {
+        max-width: 300px;
+        padding: 7px 10px;
+        font-size: 11px;
+    }
+    .aw-help {
+        display: none;
+    }
+    .aw-loading,
+    .aw-error {
+        padding: 16px;
+    }
+    .aw-help-content,
+    .aw-discovery-list {
+        max-height: calc(100dvh - 90px);
+    }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Existing company site. */
+@keyframes aw-marquee {
+    to {
+        transform: translateX(-50%);
+    }
+}
+.aw-marquee-track {
+    animation: aw-marquee 38s linear infinite;
+}
+.aw-ticket {
+    --notch: 12px;
+    background: var(--marigold);
+    border-radius: 10px;
+    -webkit-mask:
+        radial-gradient(
+                circle at 0 50%,
+                transparent var(--notch),
+                #000 calc(var(--notch) + 0.5px)
+            )
+            left / 51% 100% no-repeat,
+        radial-gradient(
+                circle at 100% 50%,
+                transparent var(--notch),
+                #000 calc(var(--notch) + 0.5px)
+            )
+            right / 51% 100% no-repeat;
+    mask:
+        radial-gradient(
+                circle at 0 50%,
+                transparent var(--notch),
+                #000 calc(var(--notch) + 0.5px)
+            )
+            left / 51% 100% no-repeat,
+        radial-gradient(
+                circle at 100% 50%,
+                transparent var(--notch),
+                #000 calc(var(--notch) + 0.5px)
+            )
+            right / 51% 100% no-repeat;
+}
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+    .aw-stage,
+    .aw-arrival-wash,
+    .aw-btn,
+    .aw-pad-button {
+        transition: none;
+    }
+    .aw-marquee-track {
+        animation: none;
+    }
 }
