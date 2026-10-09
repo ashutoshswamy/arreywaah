@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import { createWorld } from "./world";
 import {
+  outsideAmbientDomains,
+  PEDESTRIAN_RESERVATIONS,
+} from "./ambient-layout";
+import {
   DISCOVERIES,
   type DiscoveryId,
   type GameSnapshot,
@@ -8,35 +12,98 @@ import {
   type JourneyOptions,
   type NearbyId,
 } from "./gameplay";
+import { OFFICE_POINT, STATIONS, getStation, type StationId } from "./stations";
 
 const clamp = THREE.MathUtils.clamp;
-const START = new THREE.Vector3(-24, 0.3, 5);
-const OFFICE = new THREE.Vector3(24, 0.3, -3.6);
+const OFFICE = new THREE.Vector3(OFFICE_POINT.x, 0.3, OFFICE_POINT.z);
 const WALK_SPEED = 4.5;
 const GRID_STEP = 0.5;
-const GRID_WIDTH = 127;
-const GRID_HEIGHT = 41;
+const GRID_MIN_X = -35;
+const GRID_MIN_Z = -50;
+const GRID_WIDTH = 203;
+const GRID_HEIGHT = 141;
 const cameraZone = (point: THREE.Vector3) =>
-  Math.floor((point.x + 31) / 4) + 20 * Math.floor((point.z + 4) / 4);
+  Math.floor((point.x - GRID_MIN_X) / 4) +
+  32 * Math.floor((point.z - GRID_MIN_Z) / 4);
 
-// Player-radius-expanded street furniture; the promenade and office doorway remain open.
+// Player-radius-expanded furniture; the promenade and office doorway remain open.
 const OBSTACLES = [
-  { x: -10, z: 11.7, width: 3.3, depth: 2.35 },
-  ...[-22, 4, 16].map((x) => ({ x, z: 7.35, width: 0.8, depth: 0.8 })),
-  ...[-26, -20, -2, 8, 20, 28].map((x) => ({
+  ...PEDESTRIAN_RESERVATIONS,
+  // Expanded silhouettes include awnings and the traveller's backpack/jump envelope.
+  ...[-12, -4.5, 3, 10.5].map((x) => ({ x, z: 0, width: 7.4, depth: 7.8 })),
+  { x: -19, z: 1.8, width: 3.55, depth: 2.8 },
+  ...[-16.7, 16.4].map((x) => ({ x, z: 2.2, width: 3.3, depth: 1.85 })),
+  ...[-8.3, 6.8].map((x) => ({ x, z: 2.3, width: 2.7, depth: 2.1 })),
+  ...[
+    { x: -18, z: -1.2 },
+    { x: 17.8, z: -0.6 },
+    { x: -32, z: 1.5 },
+    { x: 32, z: 1 },
+  ].map((point) => ({ ...point, width: 3.6, depth: 3.6 })),
+  ...[20, 28].map((x) => ({ x, z: -2.7, width: 4.1, depth: 2.1 })),
+  { x: 20.4, z: -4.14, width: 5, depth: 1.5 },
+  { x: 27.7, z: -4.14, width: 4.5, depth: 1.5 },
+  ...[22.58, 25.42].map((x) => ({ x, z: -4, width: 1.35, depth: 1.6 })),
+  { x: -10, z: 14.8, width: 4.4, depth: 3 },
+  ...[-22, 4, 16].map((x) => ({ x, z: 7.15, width: 1.6, depth: 2 })),
+  ...[-26, -20, -2, 8, 28].map((x) => ({
     x,
-    z: 13.55,
-    width: 0.8,
-    depth: 0.8,
+    z: 17.6,
+    width: 1.5,
+    depth: 1.5,
   })),
-  ...[-31, 32].map((x) => ({ x, z: 15.4, width: 2, depth: 2 })),
+  ...STATIONS.flatMap((station) =>
+    [-3.2, -1.05, 1.05, 3.2].map((offset) => ({
+      x: station.x + offset,
+      z: station.z + 1.75,
+      width: 1.4,
+      depth: 1.4,
+    })),
+  ),
+  ...STATIONS.map((station) => ({
+    x: station.x + 2.1,
+    z: station.z - 0.9,
+    width: 3.3,
+    depth: 1.9,
+  })),
 ];
 
+function nearSegment(
+  x: number,
+  z: number,
+  start: { x: number; z: number },
+  end: { x: number; z: number },
+  radius: number,
+) {
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const lengthSq = dx * dx + dz * dz;
+  const amount =
+    lengthSq === 0
+      ? 0
+      : clamp(((x - start.x) * dx + (z - start.z) * dz) / lengthSq, 0, 1);
+  return (
+    Math.hypot(x - (start.x + amount * dx), z - (start.z + amount * dz)) <=
+    radius
+  );
+}
+
 function walkable(x: number, z: number) {
+  if (!outsideAmbientDomains({ x, z })) return false;
   const street = x >= -31 && x <= 32 && z >= 3.5 && z <= 15.8;
   const entrance = x >= 22.85 && x <= 25.15 && z >= -3.8 && z <= 15.8;
+  const stationPlaza = STATIONS.some(
+    (station) => Math.hypot(x - station.x, z - station.z) <= 4.6,
+  );
+  const stationRoute = STATIONS.some((station) =>
+    station.route
+      .slice(1)
+      .some((point, index) =>
+        nearSegment(x, z, station.route[index]!, point, 3.2),
+      ),
+  );
   return (
-    (street || entrance) &&
+    (street || entrance || stationPlaza || stationRoute) &&
     !OBSTACLES.some(
       (box) =>
         Math.abs(x - box.x) < box.width / 2 &&
@@ -95,7 +162,8 @@ export function createJourney(
   }
   scene.add(world.root);
 
-  const position = START.clone();
+  const initialStation = STATIONS[0]!;
+  const position = new THREE.Vector3(initialStation.x, 0.3, initialStation.z);
   const velocity = new THREE.Vector3();
   const input = new THREE.Vector2();
   const intended = new THREE.Vector3();
@@ -110,7 +178,7 @@ export function createJourney(
     0,
     cameraOffset.z,
   ).normalize();
-  const target = new THREE.Vector3(START.x, 0, START.z - 1.5);
+  const target = new THREE.Vector3(initialStation.x, 0, initialStation.z - 1.5);
   const desiredTarget = target.clone();
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -121,8 +189,8 @@ export function createJourney(
   for (let i = 0; i < validCells.length; i++) {
     validCells[i] = Number(
       walkable(
-        -31 + (i % GRID_WIDTH) * GRID_STEP,
-        -4 + Math.floor(i / GRID_WIDTH) * GRID_STEP,
+        GRID_MIN_X + (i % GRID_WIDTH) * GRID_STEP,
+        GRID_MIN_Z + Math.floor(i / GRID_WIDTH) * GRID_STEP,
       ),
     );
   }
@@ -142,6 +210,8 @@ export function createJourney(
   let frustumHeight = 18;
   let enteringAt: number | null = null;
   let arrived = false;
+  let paused = false;
+  let currentStation: StationId = initialStation.id;
   let disposed = false;
   let frame = 0;
   let lastTime = performance.now();
@@ -207,8 +277,8 @@ export function createJourney(
     let distance = Infinity;
     for (let i = 0; i < validCells.length; i++) {
       if (!validCells[i]) continue;
-      const x = -31 + (i % GRID_WIDTH) * GRID_STEP;
-      const z = -4 + Math.floor(i / GRID_WIDTH) * GRID_STEP;
+      const x = GRID_MIN_X + (i % GRID_WIDTH) * GRID_STEP;
+      const z = GRID_MIN_Z + Math.floor(i / GRID_WIDTH) * GRID_STEP;
       const squared = (point.x - x) ** 2 + (point.z - z) ** 2;
       if (squared < distance) {
         distance = squared;
@@ -219,9 +289,9 @@ export function createJourney(
   };
   const cellPoint = (cell: number) =>
     new THREE.Vector3(
-      -31 + (cell % GRID_WIDTH) * GRID_STEP,
+      GRID_MIN_X + (cell % GRID_WIDTH) * GRID_STEP,
       0.3,
-      -4 + Math.floor(cell / GRID_WIDTH) * GRID_STEP,
+      GRID_MIN_Z + Math.floor(cell / GRID_WIDTH) * GRID_STEP,
     );
   const planRoute = (goal: THREE.Vector3) => {
     const start = nearestCell(position);
@@ -278,6 +348,19 @@ export function createJourney(
     world.destinationRing.visible = true;
     ringTime = 0;
   };
+  const planStationRoute = (stationId: StationId) => {
+    const station = getStation(stationId);
+    if (Math.hypot(position.x - station.x, position.z - station.z) > 4.5) {
+      planRoute(OFFICE);
+      return;
+    }
+    route = station.route
+      .slice(1)
+      .map((point) => new THREE.Vector3(point.x, 0.3, point.z));
+    world.destinationRing.position.set(OFFICE.x, 0.32, OFFICE.z);
+    world.destinationRing.visible = true;
+    ringTime = 0;
+  };
 
   const stopAuto = () => {
     if (automatic) {
@@ -286,7 +369,7 @@ export function createJourney(
     }
   };
   const interact = () => {
-    if (disposed || enteringAt !== null) return;
+    if (disposed || enteringAt !== null || paused) return;
     findNearby();
     if (!nearby) return;
     stopAuto();
@@ -295,9 +378,20 @@ export function createJourney(
     velocity.set(0, 0, 0);
     world.destinationRing.visible = false;
     if (nearby === "office") {
-      position.copy(OFFICE);
+      // Approach through the same collision-aware path, then continue through the open doorway.
+      planRoute(OFFICE);
+      if (!route.length) {
+        message = "Move toward the office doorway, then press E to enter.";
+        publish();
+        return;
+      }
+      route.push(new THREE.Vector3(OFFICE.x, 0.3, -5.8));
+      world.destinationRing.visible = false;
       enteringAt = performance.now();
-      message = "Welcome to Arrey Waah.";
+      running = false;
+      jumpHeight = jumpVelocity = 0;
+      targetInteraction = null;
+      message = "Walking into the office.";
       publish();
       return;
     }
@@ -315,7 +409,12 @@ export function createJourney(
         ? "All five found. Head to the office whenever you’re ready."
         : spot.message;
     nearby = null;
+    paused = true;
+    input.set(0, 0);
+    velocity.set(0, 0, 0);
+    route = [];
     publish();
+    options.onDiscovery(spot.id);
   };
 
   const updateTheme = () => {
@@ -345,10 +444,10 @@ export function createJourney(
     }
     const dt = Math.min(0.04, (now - lastTime) / 1000);
     lastTime = now;
-    elapsed += dt;
+    if (!paused) elapsed += dt;
     intended.set(0, 0, 0);
-    if (enteringAt === null) {
-      if (input.lengthSq() > 0.001) {
+    if (!paused) {
+      if (enteringAt === null && input.lengthSq() > 0.001) {
         intended
           .addScaledVector(cameraRight, input.x)
           .addScaledVector(cameraDown, input.y);
@@ -363,6 +462,12 @@ export function createJourney(
           if (!route.length) {
             velocity.set(0, 0, 0);
             stopAuto();
+            if (enteringAt !== null && !arrived) {
+              arrived = true;
+              message = "Welcome to Arrey Waah.";
+              publish();
+              options.onArrive();
+            }
             if (targetInteraction) {
               interact();
               targetInteraction = null;
@@ -375,14 +480,24 @@ export function createJourney(
         }
       }
       if (intended.lengthSq() > 1) intended.normalize();
-      const speed = WALK_SPEED * (running && input.lengthSq() > 0 ? 1.65 : 1);
+      const speed =
+        enteringAt !== null
+          ? 2.4
+          : WALK_SPEED * (running && input.lengthSq() > 0 ? 1.65 : 1);
       velocity.x = THREE.MathUtils.damp(velocity.x, intended.x * speed, 18, dt);
       velocity.z = THREE.MathUtils.damp(velocity.z, intended.z * speed, 18, dt);
       const nextX = position.x + velocity.x * dt;
       const nextZ = position.z + velocity.z * dt;
-      if (walkable(nextX, position.z)) position.x = nextX;
+      const canStep = (x: number, z: number) =>
+        walkable(x, z) ||
+        (enteringAt !== null &&
+          x >= OFFICE.x - 0.7 &&
+          x <= OFFICE.x + 0.7 &&
+          z >= -6 &&
+          z <= OFFICE.z + 0.4);
+      if (canStep(nextX, position.z)) position.x = nextX;
       else velocity.x = 0;
-      if (walkable(position.x, nextZ)) position.z = nextZ;
+      if (canStep(position.x, nextZ)) position.z = nextZ;
       else velocity.z = 0;
     }
     const moving = velocity.lengthSq() > 0.06;
@@ -395,13 +510,14 @@ export function createJourney(
       world.traveller.rotation.y += reducedMotion.matches
         ? delta
         : delta * Math.min(1, dt * 16);
-      walkPhase += dt * (running ? 14 : 10);
+      walkPhase += dt * velocity.length() * 2.8;
     }
     if (jumpHeight > 0 || jumpVelocity > 0) {
       jumpVelocity -= dt * 18;
       jumpHeight = Math.max(0, jumpHeight + jumpVelocity * dt);
       if (jumpHeight === 0) jumpVelocity = 0;
     }
+    if (!paused) world.updateAmbient(elapsed, position, reducedMotion.matches);
     world.traveller.position.copy(position);
     if (!reducedMotion.matches) {
       const swing = moving ? Math.sin(walkPhase) * 0.5 : 0;
@@ -410,8 +526,7 @@ export function createJourney(
       });
       world.traveller.position.y +=
         jumpHeight + (moving ? Math.abs(Math.sin(walkPhase)) * 0.05 : 0);
-      const departure = Math.max(0, elapsed - 3);
-      world.train.position.x = -25 - Math.min(90, departure * departure * 0.55);
+
       world.discoveries.forEach((item, i) => {
         if (!item.node.visible) return;
         item.node.position.y = 1.4 + Math.sin(elapsed * 2.1 + i) * 0.12;
@@ -426,7 +541,7 @@ export function createJourney(
       });
       world.destinationMarker.scale.setScalar(1);
     }
-    burstAge += dt;
+    if (!paused) burstAge += dt;
     chips.forEach((chip, i) => {
       chip.visible = !reducedMotion.matches && burstAge < 0.7;
       if (!chip.visible) return;
@@ -439,7 +554,7 @@ export function createJourney(
       chip.rotation.set(burstAge * 8, angle, burstAge * 5);
       chip.scale.setScalar(1 - burstAge / 0.7);
     });
-    if (world.destinationRing.visible) {
+    if (world.destinationRing.visible && !paused) {
       ringTime += dt;
       world.destinationRing.scale.setScalar(
         reducedMotion.matches ? 1 : 1 + Math.sin(ringTime * 5) * 0.08,
@@ -450,22 +565,14 @@ export function createJourney(
 
     findNearby();
     options.onPosition(position.x, position.z);
-    const doorOpen = clamp((5 - position.distanceTo(OFFICE)) / 3, 0, 1);
+    const doorOpen =
+      enteringAt !== null
+        ? 1
+        : clamp((5 - position.distanceTo(OFFICE)) / 3, 0, 1);
     world.doors.forEach((door, i) => {
       door.position.x =
         Number(door.userData.closedX) + (i === 0 ? -1 : 1) * doorOpen * 0.85;
     });
-    if (enteringAt !== null) {
-      world.traveller.rotation.y = Math.PI;
-      world.traveller.position.z -= Math.min(
-        1.4,
-        ((now - enteringAt) / 1000) * 2,
-      );
-      if (!arrived && now - enteringAt >= (reducedMotion.matches ? 0 : 600)) {
-        arrived = true;
-        options.onArrive();
-      }
-    }
 
     // A close, cover-style camera: world ground continues far beyond every viewport edge.
     desiredTarget.set(position.x, 0, position.z - 1.5);
@@ -503,7 +610,7 @@ export function createJourney(
 
   return {
     move(x, y, run = false) {
-      if (disposed || enteringAt !== null) return;
+      if (disposed || enteringAt !== null || paused) return;
       input.set(x, y);
       if (input.lengthSq() > 1) input.normalize();
       running = run;
@@ -515,7 +622,7 @@ export function createJourney(
       }
     },
     walkTo(clientX, clientY) {
-      if (disposed || enteringAt !== null) return;
+      if (disposed || enteringAt !== null || paused) return;
       stopAuto();
       input.set(0, 0);
       const bounds = host.getBoundingClientRect();
@@ -554,10 +661,10 @@ export function createJourney(
         planRoute(clickedPoint);
     },
     autoWalk(enabled) {
-      if (disposed || enteringAt !== null) return;
+      if (disposed || enteringAt !== null || paused) return;
       if (enabled) {
         input.set(0, 0);
-        planRoute(OFFICE);
+        planStationRoute(currentStation);
         automatic = route.length > 0;
         targetInteraction = null;
       } else {
@@ -574,6 +681,7 @@ export function createJourney(
       if (
         disposed ||
         enteringAt !== null ||
+        paused ||
         jumpHeight > 0 ||
         reducedMotion.matches
       )
@@ -583,9 +691,40 @@ export function createJourney(
     zoom(delta) {
       zoom = clamp(zoom + delta, 0.75, 1.5);
     },
+    startAt(stationId) {
+      if (disposed || enteringAt !== null) return;
+      currentStation = stationId;
+      const station = getStation(stationId);
+      position.set(station.x, 0.3, station.z);
+      target.set(station.x, 0, station.z - 1.5);
+      desiredTarget.copy(target);
+      currentZone = cameraZone(position);
+      velocity.set(0, 0, 0);
+      input.set(0, 0);
+      route = [];
+      automatic = false;
+      paused = false;
+      targetInteraction = null;
+      world.destinationRing.visible = false;
+      message = `Starting near ${station.name}. Follow the corridor toward the office.`;
+      publish();
+    },
+    pause() {
+      if (disposed) return;
+      paused = true;
+      input.set(0, 0);
+      velocity.set(0, 0, 0);
+      route = [];
+      stopAuto();
+    },
+    resume() {
+      if (disposed || enteringAt !== null) return;
+      paused = false;
+    },
     reset() {
       if (disposed || enteringAt !== null) return;
-      position.copy(START);
+      const station = getStation(currentStation);
+      position.set(station.x, 0.3, station.z);
       velocity.set(0, 0, 0);
       input.set(0, 0);
       route = [];
@@ -596,14 +735,20 @@ export function createJourney(
       jumpHeight = jumpVelocity = 0;
       zoom = 1;
       elapsed = 0;
+      walkPhase = 0;
+      world.updateAmbient(0, position, reducedMotion.matches);
+      world.traveller.rotation.y = 0;
       burstAge = 10;
-      target.set(START.x, 0, START.z - 1.5);
-      currentZone = cameraZone(START);
+      target.set(station.x, 0, station.z - 1.5);
+      currentZone = cameraZone(position);
+      paused = false;
       world.discoveries.forEach((item) => {
         item.node.visible = true;
+        item.node.position.y = 1.4;
+        item.node.rotation.y = 0;
       });
       world.destinationRing.visible = false;
-      message = "A fresh walk. The five keepsakes are back on the street.";
+      message = `A fresh walk from ${station.name}. The five keepsakes are back on the street.`;
       publish();
     },
     dispose() {

@@ -69,7 +69,7 @@ export const WORK = [
     detail: "Promotional track for the Marathi film Ganu.",
   },
   {
-    title: "Ganesha – The Vighnaharta",
+    title: "Ganesha - The Vighnaharta",
     kind: "Music video",
     detail: "Music video for Shemaroo.",
   },

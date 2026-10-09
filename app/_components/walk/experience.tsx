@@ -11,9 +11,12 @@ import {
 } from "react";
 import {
   DISCOVERIES,
+  type DiscoveryId,
   type GameSnapshot,
   type JourneyController,
 } from "./gameplay";
+import { DiscoveryModal } from "./discovery-modal";
+import { getStation, STATIONS, type StationId } from "./stations";
 
 type Phase = "walk" | "enter" | "reveal" | "done";
 type Status = "loading" | "ready" | "error";
@@ -68,6 +71,12 @@ export function Experience({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<GameSnapshot>(INITIAL_SNAPSHOT);
   const [running, setRunning] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [selectedStation, setSelectedStation] = useState<StationId>("parel");
+  const [walkStarted, setWalkStarted] = useState(false);
+  const [activeDiscovery, setActiveDiscovery] = useState<DiscoveryId | null>(
+    null,
+  );
+  const [modalClosing, setModalClosing] = useState(false);
   const stage = useRef<HTMLDivElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const phaseRef = useRef<Phase>("walk");
@@ -79,6 +88,8 @@ export function Experience({ children }: { children: ReactNode }) {
   const pad = useRef(new Map<number, { x: number; y: number }>());
   const runRef = useRef(false);
   const origin = useRef<{ x: number; z: number } | null>(null);
+  const activeDiscoveryRef = useRef<DiscoveryId | null>(null);
+  const resumeFocus = useRef<HTMLParagraphElement>(null);
 
   const updateMovement = useCallback(() => {
     if (phaseRef.current !== "walk") return;
@@ -112,11 +123,33 @@ export function Experience({ children }: { children: ReactNode }) {
     controller.current?.move(0, 0);
   }, []);
 
+  const beginDiscovery = useCallback(
+    (id: DiscoveryId) => {
+      stopInput();
+      controller.current?.pause();
+      activeDiscoveryRef.current = id;
+      setActiveDiscovery(id);
+      setModalClosing(false);
+    },
+    [stopInput],
+  );
+  const closeDiscovery = useCallback(() => setModalClosing(true), []);
+  const completeDiscoveryClose = useCallback(() => {
+    if (!activeDiscoveryRef.current) return;
+    activeDiscoveryRef.current = null;
+    setActiveDiscovery(null);
+    setModalClosing(false);
+    controller.current?.resume();
+    window.setTimeout(() => resumeFocus.current?.focus(), 0);
+  }, []);
+
   const cancelAuto = useCallback(() => controller.current?.autoWalk(false), []);
 
   const finish = useCallback(() => {
     phaseRef.current = "done";
+    activeDiscoveryRef.current = null;
     disposeJourney.current?.();
+    setActiveDiscovery(null);
     setPhase("done");
   }, []);
 
@@ -173,6 +206,9 @@ export function Experience({ children }: { children: ReactNode }) {
             if (!cancelled && !failed && phaseRef.current === "walk")
               setSnapshot(next);
           },
+          onDiscovery(id) {
+            if (!cancelled && phaseRef.current === "walk") beginDiscovery(id);
+          },
           onPosition(x, z) {
             if (cancelled || phaseRef.current !== "walk") return;
             if (!origin.current) origin.current = { x, z };
@@ -211,7 +247,7 @@ export function Experience({ children }: { children: ReactNode }) {
       dispose();
       if (disposeJourney.current === dispose) disposeJourney.current = null;
     };
-  }, [attempt, skip, stopInput]);
+  }, [attempt, beginDiscovery, skip, stopInput]);
 
   useEffect(() => {
     if (phase === "done") return;
@@ -250,6 +286,8 @@ export function Experience({ children }: { children: ReactNode }) {
     const down = (event: KeyboardEvent) => {
       if (
         phaseRef.current !== "walk" ||
+        !walkStarted ||
+        activeDiscoveryRef.current !== null ||
         isEditing(event.target) ||
         event.metaKey ||
         event.ctrlKey ||
@@ -312,7 +350,7 @@ export function Experience({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", visibility);
       stopInput();
     };
-  }, [cancelAuto, skip, phase, stopInput, updateMovement]);
+  }, [cancelAuto, skip, phase, stopInput, updateMovement, walkStarted]);
 
   useEffect(() => {
     const pending = timers;
@@ -322,7 +360,12 @@ export function Experience({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const interactive = status === "ready" && phase === "walk";
+  const interactive =
+    status === "ready" &&
+    phase === "walk" &&
+    walkStarted &&
+    activeDiscovery === null &&
+    !modalClosing;
   const onWheel = (event: WheelEvent<HTMLDivElement>) => {
     if (!interactive || event.ctrlKey || event.metaKey) return;
     if (
@@ -395,10 +438,27 @@ export function Experience({ children }: { children: ReactNode }) {
     if (stage.current) stage.current.dataset.moved = "false";
     controller.current?.reset();
   };
+  const station = getStation(selectedStation);
+  const startWalk = () => {
+    origin.current = null;
+    if (stage.current) stage.current.dataset.moved = "false";
+    controller.current?.startAt(selectedStation);
+    setWalkStarted(true);
+    setSnapshot((current) => ({
+      ...current,
+      message: `Starting near ${station.name}. Follow the corridor toward the office.`,
+    }));
+  };
 
   return (
     <>
-      <div inert={phase !== "done"}>{children}</div>
+      <div
+        className="aw-site"
+        data-open={phase === "done"}
+        inert={phase !== "done"}
+      >
+        {children}
+      </div>
       <noscript>
         <div className="aw-no-script">
           <p>The interactive neighbourhood needs JavaScript.</p>
@@ -427,7 +487,7 @@ export function Experience({ children }: { children: ReactNode }) {
             onLostPointerCapture={(event) => endDrag(event, false)}
           />
 
-          <div className="aw-ui">
+          <div className="aw-ui" inert={activeDiscovery !== null}>
             <div className="aw-ui-top">
               <a
                 className="aw-brand"
@@ -482,8 +542,9 @@ export function Experience({ children }: { children: ReactNode }) {
                       zoom.
                     </p>
                     <p>
-                      Guide me follows the corridor to the office. Detours are
-                      optional.
+                      Follow corridor traces the approximate route to the
+                      office. Detours are optional; this is not turn-by-turn
+                      mapping.
                     </p>
                     <button
                       type="button"
@@ -535,14 +596,62 @@ export function Experience({ children }: { children: ReactNode }) {
               </div>
             ) : null}
 
-            {status === "ready" ? (
+            {status === "ready" && !walkStarted ? (
+              <section
+                className="aw-station-chooser"
+                aria-labelledby="aw-station-title"
+              >
+                <p className="aw-chooser-eyebrow">
+                  A little wander before the work
+                </p>
+                <h1 id="aw-station-title">Where will you begin?</h1>
+                <p className="aw-chooser-intro">
+                  Choose a nearby station, then follow the illustrated streets
+                  to our office.
+                </p>
+                <p className="aw-selected-description">{station.description}</p>
+                <div
+                  className="aw-station-options"
+                  aria-label="Starting station"
+                >
+                  {STATIONS.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="aw-station-option"
+                      aria-pressed={selectedStation === option.id}
+                      onClick={() => setSelectedStation(option.id)}
+                    >
+                      <span className="aw-station-name">{option.name}</span>
+                      <span className="aw-station-subtitle">
+                        {option.subtitle}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="aw-map-disclaimer">
+                  Approximate relative layout inspired by the shared reference.
+                  Not turn-by-turn directions.
+                </p>
+                <button
+                  type="button"
+                  className="aw-btn aw-start-walk"
+                  onClick={startWalk}
+                >
+                  Start near {station.name}
+                  <span aria-hidden="true">↗</span>
+                </button>
+              </section>
+            ) : null}
+
+            {status === "ready" && walkStarted ? (
               <div className="aw-ui-bottom">
                 <div
                   className="aw-play-note aw-panel"
                   role="status"
                   aria-atomic="true"
                 >
-                  <p>
+                  <p ref={resumeFocus} tabIndex={-1}>
                     {phase === "enter"
                       ? "You’re here. Come on in."
                       : snapshot.message || INITIAL_SNAPSHOT.message}
@@ -618,7 +727,7 @@ export function Experience({ children }: { children: ReactNode }) {
                           controller.current?.autoWalk(!snapshot.automatic);
                         }}
                       >
-                        {snapshot.automatic ? "Stop guide" : "Guide me"}
+                        {snapshot.automatic ? "Stop guide" : "Follow corridor"}
                       </button>
                       <button
                         type="button"
@@ -659,6 +768,14 @@ export function Experience({ children }: { children: ReactNode }) {
               </div>
             ) : null}
           </div>
+          {activeDiscovery ? (
+            <DiscoveryModal
+              discoveryId={activeDiscovery}
+              closing={modalClosing}
+              onClose={closeDiscovery}
+              onExited={completeDiscoveryClose}
+            />
+          ) : null}
         </div>
       ) : null}
     </>

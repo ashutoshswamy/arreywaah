@@ -1,5 +1,8 @@
 import * as THREE from "three";
 import { DISCOVERIES, type DiscoveryId } from "./gameplay";
+import { STATIONS, type WorldPoint } from "./stations";
+import { createAmbient } from "./ambient";
+import { AMBIENT_LAYOUT } from "./ambient-layout";
 
 const PALETTE = {
   ink: "#17123f",
@@ -13,7 +16,6 @@ type World = {
   root: THREE.Group;
   traveller: THREE.Group;
   limbs: THREE.Group[];
-  train: THREE.Group;
   doors: THREE.Group[];
   /** Shared-coordinate pickups; the controller owns bobbing, rotation and visibility. */
   discoveries: { id: DiscoveryId; node: THREE.Group }[];
@@ -21,6 +23,11 @@ type World = {
   destinationMarker: THREE.Group;
   /** Hidden ground feedback ring; the controller owns positioning and scale. */
   destinationRing: THREE.Mesh;
+  updateAmbient: (
+    elapsed: number,
+    player: WorldPoint,
+    reducedMotion: boolean,
+  ) => void;
   dispose: () => void;
 };
 
@@ -39,6 +46,7 @@ export function createWorld(): World {
   const textures = new Set<THREE.Texture>();
   const instances = new Set<THREE.InstancedMesh>();
   const materialCache = new Map<string, THREE.MeshStandardMaterial>();
+  const bevelCache = new Map<string, THREE.BufferGeometry>();
 
   function geometry<T extends THREE.BufferGeometry>(value: T): T {
     geometries.add(value);
@@ -55,7 +63,7 @@ export function createWorld(): World {
     const value = new THREE.MeshStandardMaterial({
       color,
       roughness,
-      flatShading: true,
+      flatShading: false,
     });
     materials.add(value);
     materialCache.set(key, value);
@@ -67,9 +75,9 @@ export function createWorld(): World {
   const pink = material(PALETTE.pink);
   const teal = material(PALETTE.teal);
   const chalk = material(PALETTE.chalk);
-  const paving = material("#e8d8bb");
-  const road = material("#393450");
-  const earth = material("#78674d");
+  const paving = material("#d9d3c5", 0.96);
+  const road = material("#393b40", 0.92);
+  const earth = material("#78674d", 0.98);
   const leaf = material("#329d82");
   const darkLeaf = material("#237968");
   const glass = material("#539ca1", 0.3);
@@ -118,6 +126,44 @@ export function createWorld(): World {
     depth: number,
   ) {
     return mesh(parent, unitBox, finish, x, y, z, width, height, depth);
+  }
+
+  // Dimension-keyed bevels retain exact outer bounds; thin trim and paving stay square.
+  function softBox(
+    parent: THREE.Group,
+    finish: THREE.Material,
+    x: number,
+    y: number,
+    z: number,
+    width: number,
+    height: number,
+    depth: number,
+  ) {
+    const key = `${width}:${height}:${depth}`;
+    let shape = bevelCache.get(key);
+    if (!shape) {
+      const radius = Math.min(0.055, width / 5, height / 5, depth / 5);
+      const profile = new THREE.Shape();
+      profile.moveTo(-width / 2 + radius, -height / 2 + radius);
+      profile.lineTo(width / 2 - radius, -height / 2 + radius);
+      profile.lineTo(width / 2 - radius, height / 2 - radius);
+      profile.lineTo(-width / 2 + radius, height / 2 - radius);
+      profile.closePath();
+      shape = geometry(
+        new THREE.ExtrudeGeometry(profile, {
+          depth: depth - radius * 2,
+          bevelEnabled: true,
+          bevelSize: radius,
+          bevelThickness: radius,
+          bevelSegments: 1,
+          steps: 1,
+          curveSegments: 1,
+        }),
+      );
+      shape.translate(0, 0, -depth / 2 + radius);
+      bevelCache.set(key, shape);
+    }
+    return mesh(parent, shape, finish, x, y, z);
   }
 
   function cylinder(
@@ -220,29 +266,128 @@ export function createWorld(): World {
     scenery(unitBox, finish, x, y, z, width, height, depth);
   }
 
+  function batchRigid(node: THREE.Group) {
+    node.updateWorldMatrix(true, true);
+    const inverse = node.matrixWorld.clone().invert();
+    const batches = new Map<
+      THREE.BufferGeometry,
+      Map<THREE.Material, THREE.Matrix4[]>
+    >();
+    const originals: THREE.Mesh[] = [];
+    node.traverse((child) => {
+      if (!(child instanceof THREE.Mesh) || Array.isArray(child.material))
+        return;
+      let finishes = batches.get(child.geometry);
+      if (!finishes) {
+        finishes = new Map();
+        batches.set(child.geometry, finishes);
+      }
+      let transforms = finishes.get(child.material);
+      if (!transforms) {
+        transforms = [];
+        finishes.set(child.material, transforms);
+      }
+      transforms.push(
+        new THREE.Matrix4().multiplyMatrices(inverse, child.matrixWorld),
+      );
+      originals.push(child);
+    });
+    originals.forEach((child) => child.removeFromParent());
+    for (const [shape, finishes] of batches) {
+      for (const [finish, transforms] of finishes) {
+        const batch = new THREE.InstancedMesh(shape, finish, transforms.length);
+        batch.name = `${node.name}-details`;
+        transforms.forEach((transform, index) =>
+          batch.setMatrixAt(index, transform),
+        );
+        batch.instanceMatrix.needsUpdate = true;
+        batch.castShadow = true;
+        batch.receiveShadow = true;
+        batch.computeBoundingSphere();
+        instances.add(batch);
+        node.add(batch);
+      }
+    }
+  }
+
   // Continuous ground has no nearby raised-base edge; foot level stays at y=0.3.
   box(root, paving, 0, -0.34, 0, 340, 1, 340);
-  box(root, chalk, 0, 0.23, 5, 330, 0.14, 4);
-  box(root, road, 0, 0.19, 10.5, 330, 0.06, 5);
-  box(root, chalk, 0, 0.23, 14.5, 330, 0.14, 3);
-  box(root, chalk, 24, 0.23, 0, 6, 0.14, 10);
-  box(root, chalk, -24, 0.23, 1, 6, 0.14, 8);
-  for (let x = -162; x <= 162; x += 3) {
-    sceneryBox(x % 2 === 0 ? yellow : chalk, x, 0.28, 7.65, 2.95, 0.22, 0.3);
-    sceneryBox(chalk, x, 0.228, 10.5, 1.4, 0.015, 0.12);
+  const roadAlongX = (start: number, end: number, z: number, width: number) => {
+    if (end <= start) return;
+    box(root, road, (start + end) / 2, 0.19, z, end - start, 0.06, width);
+    for (let x = start + 1.7; x < end - 0.8; x += 4)
+      sceneryBox(chalk, x, 0.228, z, 1.7, 0.015, 0.12);
+  };
+  const roadAlongZ = (x: number, start: number, end: number, width: number) => {
+    if (end <= start) return;
+    box(root, road, x, 0.19, (start + end) / 2, width, 0.06, end - start);
+    for (let z = start + 1.7; z < end - 0.8; z += 4)
+      sceneryBox(chalk, x, 0.228, z, 0.12, 0.015, 1.7);
+  };
+  const sidewalkAlongX = (
+    start: number,
+    end: number,
+    z: number,
+    width: number,
+  ) => {
+    if (end <= start) return;
+    box(root, chalk, (start + end) / 2, 0.23, z, end - start, 0.14, width);
+  };
+
+  // Give the station pads and street junctions their own footprints instead of stacking slabs.
+  sidewalkAlongX(-165, -39, 5, 4);
+  sidewalkAlongX(-35, 35, 5, 4);
+
+  roadAlongX(-165, -39, 10.5, 5);
+  roadAlongX(-39, -35, 10.5, 5);
+  roadAlongX(-35, 26.5, 10.5, 5);
+
+  sidewalkAlongX(-165, -39, 14.5, 3);
+  sidewalkAlongX(-35, -12.2, 14.5, 3);
+  sidewalkAlongX(-7.8, 13.8, 14.5, 3);
+  sidewalkAlongX(22.2, 26.5, 14.5, 3);
+
+  box(root, chalk, 24, 0.23, -0.5, 6, 0.14, 7);
+  box(root, paving, -10, 0.23, 14.8, 4.4, 0.14, 3);
+
+  // No east-west slab continues through the reserved railway at x=41..50.
+  roadAlongX(-77, 39, -17, 4);
+  for (const z of [22, 52]) roadAlongX(-77, 39, z, 4);
+  for (const x of [-37, 37]) {
+    const verticalSegments: readonly (readonly [number, number])[] =
+      x === 37
+        ? [
+            [AMBIENT_LAYOUT.road.minZ, -19],
+            [-15, 20],
+            [24, 50],
+            [54, AMBIENT_LAYOUT.road.maxZ],
+          ]
+        : [
+            [-51, -19],
+            [-15, 8],
+            [13, 20],
+            [24, 50],
+            [54, 57],
+          ];
+    for (const [start, end] of verticalSegments) roadAlongZ(x, start, end, 4);
   }
+  box(root, paving, -102, 0.23, 7.5, 126, 0.14, 1);
+  box(root, paving, -28.65, 0.23, 7.5, 12.7, 0.14, 1);
+  box(root, paving, -9.15, 0.23, 7.5, 25.1, 0.14, 1);
+  box(root, paving, 10, 0.23, 7.5, 11.4, 0.14, 1);
+  box(root, paving, 25.65, 0.23, 7.5, 18.7, 0.14, 1);
+
   for (let x = -32; x <= 32; x += 2) {
     box(root, paving, x, 0.303, 5, 0.025, 0.006, 3.7);
   }
   for (let z = 8.3; z < 12.9; z += 0.72) {
     box(root, chalk, 24, 0.231, z, 3.2, 0.02, 0.36);
   }
-  // Small inlaid brass pavers suggest the route without turning it into a UI overlay.
   for (let x = -22; x <= 22; x += 4) {
-    box(root, yellow, x, 0.307, 5, 0.3, 0.012, 0.12);
+    box(root, yellow, x, 0.312, 5, 0.3, 0.012, 0.12);
   }
-  for (let z = 3; z >= -3; z -= 2) {
-    box(root, yellow, 24, 0.307, z, 0.12, 0.012, 0.3);
+  for (let z = -3; z <= 2; z += 2) {
+    box(root, yellow, 24, 0.312, z, 0.12, 0.012, 0.3);
   }
 
   function planter(parent: THREE.Group, x: number, z: number, width = 1.8) {
@@ -292,51 +437,26 @@ export function createWorld(): World {
     box(value, yellow, 0, 1, -0.28, 2.1, 0.28, 0.12);
   }
 
-  // An open, columned station: no south wall to hide the start of the walk.
-  const station = group(root, "station", -24, 0.3, -5);
-  box(station, chalk, 0, -0.07, 0, 13, 0.14, 8);
-  box(station, teal, 0, 1.5, -3.5, 12, 3, 0.3);
-  for (const x of [-5.5, -1.8, 1.8, 5.5]) {
-    box(station, chalk, x, 1.8, 2.8, 0.3, 3.6, 0.3);
-    box(station, yellow, x, 0.32, 2.8, 0.46, 0.64, 0.46);
-  }
-  box(station, ink, 0, 3.7, -0.2, 13.2, 0.24, 8.4);
-  const stationRoof = box(station, yellow, 0, 4, -0.2, 13.4, 0.28, 8.6);
-  stationRoof.rotation.x = -0.045;
-  box(station, ink, 0, 3.24, 3.05, 5.5, 0.84, 0.18);
-  sign(station, "STATION", 0, 3.24, 3.151, 5.3, 0.7);
-  box(station, ink, -4.3, 1.13, -3.28, 1.4, 2.25, 0.4);
-  box(station, glass, -4.3, 1.7, -3.05, 1.12, 0.8, 0.03);
-  box(station, pink, -4.3, 0.87, -3.02, 0.68, 0.14, 0.05);
-  bench(-28, -4);
-
-  // Rails extend behind the station; the animated train is wholly independent.
-  box(root, earth, -23, 0.2, -12, 23, 0.12, 3.8);
-  for (let x = -34; x <= -12; x += 0.75) {
-    box(root, ink, x, 0.29, -12, 0.18, 0.12, 2.5);
-  }
-  for (const z of [-12.85, -11.15])
-    box(root, chalk, -23, 0.38, z, 23, 0.1, 0.1);
-  const train = group(root, "station-train", -25, 0, -12);
-  for (const carriageX of [-3.8, 3.8]) {
-    const carriage = group(train, "carriage", carriageX);
-    box(carriage, ink, 0, 0.88, 0, 7.1, 0.5, 2.4);
-    box(carriage, chalk, 0, 1.95, 0, 7.1, 1.8, 2.4);
-    box(carriage, teal, 0, 1.23, 0, 7.15, 0.45, 2.43);
-    box(carriage, yellow, 0, 2.93, 0, 7.2, 0.2, 2.5);
-    for (const x of [-2.65, -1.3, 0.05, 1.4, 2.7]) {
-      for (const z of [-1.211, 1.211])
-        box(carriage, glass, x, 2.12, z, 0.96, 0.7, 0.035);
+  for (const station of STATIONS) {
+    const platform = group(
+      root,
+      `station-${station.id}`,
+      station.x,
+      0.3,
+      station.z,
+    );
+    const accent = station.id === "parel" ? yellow : pink;
+    box(platform, chalk, 0, -0.07, 0, 7.4, 0.14, 4.8);
+    softBox(platform, ink, 0, 3.55, -0.1, 7.6, 0.24, 5);
+    softBox(platform, accent, 0, 3.82, -0.1, 7.3, 0.3, 4.8);
+    for (const x of [-3.2, -1.05, 1.05, 3.2]) {
+      box(platform, chalk, x, 1.715, 1.75, 0.2, 3.43, 0.2);
     }
-    for (const x of [-2.3, 2.3]) {
-      for (const z of [-0.94, 0.94]) {
-        const wheel = cylinder(carriage, ink, x, 0.6, z, 0.37, 0.2);
-        wheel.rotation.x = Math.PI / 2;
-      }
-    }
+    box(platform, ink, 0, 3.05, 2.22, 5.4, 0.9, 0.16);
+    sign(platform, station.name.toUpperCase(), 0, 3.05, 2.311, 5.2, 0.66);
+    box(platform, yellow, -2.9, 0.02, 0.2, 0.18, 0.025, 4.2);
+    bench(station.x + 2.1, station.z - 0.9);
   }
-  box(train, ink, 0, 1, 0, 0.5, 0.25, 0.7);
-  box(train, glass, 7.365, 2.08, 0, 0.04, 0.75, 1.7);
 
   function shop(
     x: number,
@@ -352,7 +472,7 @@ export function createWorld(): World {
       0.3,
       0,
     );
-    box(value, chalk, 0, height / 2, 0, 5.8, height, 4);
+    softBox(value, chalk, 0, height / 2, 0, 5.8, height, 4);
     box(value, accent, 0, height / 2, 2.03, 5.8, height, 0.15);
     box(value, ink, 0, 1.25, 2.13, 4.95, 2.5, 0.06);
     box(value, glass, -1.38, 1.4, 2.175, 1.95, 1.7, 0.04);
@@ -409,22 +529,9 @@ export function createWorld(): World {
   tree(17.8, -0.6, 3.7);
   tree(-32, 1.5, 4);
   tree(32, 1, 4.2);
-  tree(-35, 17.5, 3.5);
-  tree(36, 17.5, 3.5);
-  tree(15.7, -12, 4.5);
-  tree(31.8, -14.5, 4.8);
 
-  // Streets and courtyards continue beyond the playable rectangle, not through it.
-  for (const z of [-17, 22, 52]) {
-    sceneryBox(road, 0, 0.19, z, 154, 0.06, 4);
-    for (let x = -72; x <= 72; x += 4)
-      sceneryBox(chalk, x, 0.228, z, 1.7, 0.015, 0.12);
-  }
-  for (const x of [-37, 37]) {
-    sceneryBox(road, x, 0.19, 3, 4, 0.06, 108);
-    for (let z = -48; z <= 54; z += 4)
-      sceneryBox(chalk, x, 0.228, z, 0.12, 0.015, 1.7);
-  }
+  tree(15.7, -12, 4.5);
+  tree(31.8, -13.4, 4.8);
 
   function neighbourhoodBlock(x: number, z: number, index: number) {
     const accent = [teal, pink, yellow][index % 3];
@@ -502,23 +609,41 @@ export function createWorld(): World {
       sceneryBox(chalk, x + dx, roof + 0.28, z, 0.12, 0.4, 7.2);
   }
 
+  const nearWalkCorridor = (x: number, z: number) =>
+    STATIONS.some((station) =>
+      station.route.slice(1).some((point, index) => {
+        const start = station.route[index]!;
+        const dx = point.x - start.x;
+        const dz = point.z - start.z;
+        const lengthSq = dx * dx + dz * dz;
+        const amount =
+          lengthSq === 0
+            ? 0
+            : THREE.MathUtils.clamp(
+                ((x - start.x) * dx + (z - start.z) * dz) / lengthSq,
+                0,
+                1,
+              );
+        return (
+          Math.hypot(x - (start.x + amount * dx), z - (start.z + amount * dz)) <
+          9
+        );
+      }),
+    );
+
   let blockIndex = 0;
-  for (const z of [-24, -38, 29, 43]) {
+  for (const z of [-26, -40, 31, 44]) {
     for (let x = -64; x <= 68; x += 12) {
       // Leave the cross streets legible between the blocks.
-      if (Math.abs(Math.abs(x) - 37) < 6) continue;
+      if (Math.abs(Math.abs(x) - 37) < 6 || (x > 39 && x < 58)) continue;
+      if (nearWalkCorridor(x, z)) continue;
       neighbourhoodBlock(x, z, blockIndex++);
     }
   }
-  for (const x of [-64, -50, 48, 62]) {
-    for (const z of [-9, 5, 17]) neighbourhoodBlock(x, z, blockIndex++);
-  }
-  for (const z of [-18.7, 24, 50]) {
-    for (let x = -70; x <= 70; x += 14) {
-      sceneryBox(teal, x, 0.34, z, 1.2, 0.36, 1.2);
-      scenery(unitCylinder, earth, x, 1.3, z, 0.12, 2.1, 0.12);
-      scenery(unitBall, darkLeaf, x - 0.25, 2.8, z, 1, 1.15, 1);
-      scenery(unitBall, leaf, x + 0.3, 3.3, z, 0.9, 1.05, 0.9);
+  for (const x of [-64, -50, 60, 74]) {
+    for (const z of [-7]) {
+      if (nearWalkCorridor(x, z)) continue;
+      neighbourhoodBlock(x, z, blockIndex++);
     }
   }
 
@@ -537,11 +662,11 @@ export function createWorld(): World {
   for (const x of [0.15, 0.4, 0.65])
     cylinder(cart, chalk, x, 1.42, 0.15, 0.08, 0.16);
 
-  const rickshaw = group(root, "parked-rickshaw", -10, 0.23, 11.7);
-  box(rickshaw, teal, 0, 0.68, 0, 2.5, 0.55, 1.55);
+  const rickshaw = group(root, "parked-rickshaw", -10, 0.3, 14.8);
+  softBox(rickshaw, teal, 0, 0.68, 0, 2.5, 0.55, 1.55);
   box(rickshaw, yellow, 0.9, 1, 0, 0.75, 0.45, 1.35);
   box(rickshaw, ink, -0.3, 1.15, 0, 1.25, 0.3, 1.2);
-  box(rickshaw, yellow, -0.4, 2, 0, 2.05, 0.18, 1.75);
+  softBox(rickshaw, yellow, -0.4, 2, 0, 2.05, 0.18, 1.75);
   for (const z of [-0.68, 0.68]) {
     box(rickshaw, ink, -1.25, 1.55, z, 0.08, 0.9, 0.08);
     box(rickshaw, ink, 0.5, 1.55, z, 0.08, 0.9, 0.08);
@@ -592,7 +717,7 @@ export function createWorld(): World {
       index === 0 ? "left-office-door" : "right-office-door",
       x,
       0,
-      4,
+      4.27,
     );
     door.userData.closedX = x;
     box(door, glass, 0, 1.38, 0, 1.26, 2.7, 0.075);
@@ -613,10 +738,38 @@ export function createWorld(): World {
     box(lamp, ink, 0, 2.73, -0.25, 0.08, 0.08, 0.55);
     box(lamp, yellow, 0, 2.66, -0.48, 0.32, 0.12, 0.22);
   }
-  for (const x of [-26, -20, -2, 8, 20, 28]) {
+  for (const x of [-26, -20, -2, 8, 28]) {
     sceneryBox(chalk, x, 0.29, 17.6, 0.3, 0.26, 0.3);
     sceneryBox(pink, x, 0.43, 17.6, 0.31, 0.04, 0.31);
   }
+
+  // Each NPC owns a short, furniture-free promenade outside the traveller domain.
+  for (const path of AMBIENT_LAYOUT.pedestrians) {
+    const width = path.maxX - path.minX + 1.4;
+    box(
+      root,
+      chalk,
+      (path.minX + path.maxX) / 2,
+      0.23,
+      path.z,
+      width,
+      0.14,
+      1.4,
+    );
+    for (const x of [path.minX - 0.63, path.maxX + 0.63])
+      sceneryBox(teal, x, 0.32, path.z, 0.1, 0.04, 1.3);
+  }
+  const ambient = createAmbient({
+    root,
+    group,
+    box,
+    softBox,
+    cylinder,
+    material,
+    sign,
+    sceneryBox,
+    batchRigid,
+  });
 
   for (const [shape, finishes] of sceneryBatches) {
     for (const [finish, transforms] of finishes) {
@@ -772,9 +925,9 @@ export function createWorld(): World {
     box(leg, ink, 0, -0.31, 0, 0.21, 0.62, 0.23);
     box(leg, chalk, 0, -0.66, 0.06, 0.25, 0.12, 0.38);
   }
-  box(traveller, pink, 0, 1.03, 0, 0.57, 0.66, 0.34);
+  softBox(traveller, pink, 0, 1.03, 0, 0.57, 0.66, 0.34);
   box(traveller, yellow, 0, 1.07, 0.179, 0.045, 0.51, 0.02);
-  box(traveller, teal, 0, 1.07, -0.27, 0.47, 0.55, 0.24);
+  softBox(traveller, teal, 0, 1.07, -0.27, 0.47, 0.55, 0.24);
   box(traveller, darkLeaf, 0, 0.98, -0.4, 0.31, 0.22, 0.07);
   for (const x of [-0.2, 0.2])
     box(traveller, teal, x, 1.13, 0.183, 0.055, 0.45, 0.035);
@@ -808,17 +961,18 @@ export function createWorld(): World {
     materials.clear();
     textures.clear();
     materialCache.clear();
+    bevelCache.clear();
   }
 
   return {
     root,
     traveller,
     limbs: [leftLeg, rightLeg, leftArm, rightArm],
-    train,
     doors,
     discoveries,
     destinationMarker,
     destinationRing,
+    updateAmbient: ambient.updateAmbient,
     dispose,
   };
 }
